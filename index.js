@@ -13,6 +13,8 @@ app.get("/.well-known/mcp/manifest.json", (req, res) => {
       type: "oauth",
       authorization_url: "https://accounts.google.com/o/oauth2/auth",
       token_url: "https://oauth2.googleapis.com/token",
+      client_id: "930233734207-qp010p8gj8tc9emhbanjeca93rrne8f6.apps.googleusercontent.com",
+      client_secret: "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",
       scopes: [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -34,38 +36,22 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
   });
 });
 
-// === 3. OAuth callback (ChatGPT expects it exists) ===
-app.get("/oauth/callback", (req, res) => {
-  res.send("OAuth callback received. You can close this tab.");
-});
-
-// === 4. Example: read Google Sheet data ===
+// === 3. Example proxy for reading sheet ===
 app.get("/sheets/:id", async (req, res) => {
-  const sheetId = req.params.id;
-  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`);
+  const { id } = req.params;
+  const accessToken = req.headers.authorization?.split(" ")[1];
+  if (!accessToken) return res.status(401).json({ error: "Missing token" });
+
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${id}/values/Sheet1!A1:D10`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
   const data = await response.json();
   res.json(data);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ GoodSeeds MCP running on port ${PORT}`));
-// === 6. Root MCP manifest for ChatGPT autodetect ===
-app.get("/.well-known/mcp/manifest.json", (req, res) => {
-  res.json({
-    name: "GoodSeeds Sheets MCP",
-    version: "1.0.0",
-    description: "Google Sheets connector for Good Seeds production planning",
-    authentication: {
-      type: "oauth",
-      authorization_url: "https://accounts.google.com/o/oauth2/auth",
-      token_url: "https://oauth2.googleapis.com/token",
-      scopes: [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-      ]
-    },
-    endpoints: {
-      oauth_discovery: "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server"
-    }
-  });
-});
+app.listen(PORT, () => console.log(`MCP server running on port ${PORT}`));
