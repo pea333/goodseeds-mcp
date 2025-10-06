@@ -4,6 +4,12 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  next();
+});
+
 // === 1. MCP manifest ===
 app.get("/.well-known/mcp/manifest.json", (req, res) => {
   res.json({
