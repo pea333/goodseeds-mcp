@@ -4,12 +4,11 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// 🔹 MCP manifest endpoint
+// === 1. MCP manifest ===
 app.get("/.well-known/mcp/manifest.json", (req, res) => {
   res.json({
     name: "GoodSeeds Google Sheets Connector",
-    version: "1.0.1",
-    description: "MCP-compatible proxy for Google Sheets API",
+    version: "1.0.0",
     authentication: {
       type: "oauth",
       authorization_url: "https://accounts.google.com/o/oauth2/auth",
@@ -22,9 +21,10 @@ app.get("/.well-known/mcp/manifest.json", (req, res) => {
   });
 });
 
-// 🔹 OAuth 2.0 metadata endpoint (MCP expects this)
+// === 2. OAuth discovery endpoint ===
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
   res.json({
+    issuer: "https://accounts.google.com",
     authorization_endpoint: "https://accounts.google.com/o/oauth2/auth",
     token_endpoint: "https://oauth2.googleapis.com/token",
     scopes_supported: [
@@ -34,32 +34,18 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
   });
 });
 
-// 🔹 Simple proxy to Google Sheets API
+// === 3. OAuth callback (ChatGPT expects it exists) ===
+app.get("/oauth/callback", (req, res) => {
+  res.send("OAuth callback received. You can close this tab.");
+});
+
+// === 4. Example: read Google Sheet data ===
 app.get("/sheets/:id", async (req, res) => {
-  const { id } = req.params;
-  const accessToken = req.headers.authorization?.split(" ")[1];
-
-  if (!accessToken) {
-    return res.status(401).json({ error: "Missing Authorization header" });
-  }
-
-  try {
-    const response = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${id}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch from Google Sheets API", details: err.message });
-  }
+  const sheetId = req.params.id;
+  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`);
+  const data = await response.json();
+  res.json(data);
 });
 
-// 🔹 Default route
-app.get("/", (req, res) => {
-  res.send("✅ GoodSeeds MCP server is running.");
-});
-
-// 🔹 Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ GoodSeeds MCP running on port ${PORT}`));
