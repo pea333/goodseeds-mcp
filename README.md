@@ -1,0 +1,1 @@
+# goodseeds-mcp
