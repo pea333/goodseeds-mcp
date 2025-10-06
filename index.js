@@ -49,3 +49,23 @@ app.get("/sheets/:id", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ GoodSeeds MCP running on port ${PORT}`));
+// === 6. Root MCP manifest for ChatGPT autodetect ===
+app.get("/.well-known/mcp/manifest.json", (req, res) => {
+  res.json({
+    name: "GoodSeeds Sheets MCP",
+    version: "1.0.0",
+    description: "Google Sheets connector for Good Seeds production planning",
+    authentication: {
+      type: "oauth",
+      authorization_url: "https://accounts.google.com/o/oauth2/auth",
+      token_url: "https://oauth2.googleapis.com/token",
+      scopes: [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+      ]
+    },
+    endpoints: {
+      oauth_discovery: "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server"
+    }
+  });
+});
