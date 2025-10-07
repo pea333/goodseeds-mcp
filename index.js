@@ -1,22 +1,127 @@
-// ===================== Authorization endpoint (real redirect) =====================
+const express = require('express');
+const https = require('https');
+
+const app = express();
+app.use(express.json());
+
+// ===================== 1. MCP manifest =====================
+const manifest = {
+  name: "goodseeds-google-sheets",
+  version: "1.0.0",
+  authentication: [
+    {
+      type: "oauth",
+      oauth_server: "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server",
+      scopes: [
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "offline_access"
+      ]
+    }
+  ],
+  terms_of_service_url: "https://goodseeds.ru/connector-terms",
+  privacy_policy_url: "https://goodseeds.ru/page84131506.html",
+  contact: "nik@goodseeds.ru"
+};
+
+app.get('/.well-known/mcp/manifest.json', (req, res) => {
+  res.type('application/json').json(manifest);
+});
+app.head('/.well-known/mcp/manifest.json', (req, res) => res.status(200).send('OK'));
+
+// ===================== 2. OAuth Server Metadata =====================
+const oauthMetadata = {
+  issuer: "https://goodseeds-mcp.vercel.app",
+  authorization_endpoint: "https://goodseeds-mcp.vercel.app/oauth/authorize",
+  token_endpoint: "https://goodseeds-mcp.vercel.app/oauth/token",
+  registration_endpoint: "https://goodseeds-mcp.vercel.app/oauth/register",
+  response_types_supported: ["code"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
+  code_challenge_methods_supported: ["S256"],
+  token_endpoint_auth_methods_supported: ["none"],
+  scopes_supported: [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "offline_access"
+  ]
+};
+
+app.get('/.well-known/oauth-authorization-server', (req, res) => {
+  res.type('application/json').json(oauthMetadata);
+});
+app.head('/.well-known/oauth-authorization-server', (req, res) => res.status(200).send('OK'));
+
+// ===================== 3. Protected Resource Metadata =====================
+const protectedResourceMetadata = {
+  resource: "https://goodseeds-mcp.vercel.app",
+  authorization_servers: [
+    "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server"
+  ],
+  bearer_methods_supported: ["header"],
+  scopes_supported: [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "offline_access"
+  ]
+};
+
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  res.type('application/json').json(protectedResourceMetadata);
+});
+app.head('/.well-known/oauth-protected-resource', (req, res) => res.status(200).send('OK'));
+
+// ===================== 4. Dynamic client registration =====================
+app.post('/oauth/register', (req, res) => {
+  const { redirect_uris } = req.body || {};
+  const requiredRedirect = 'https://chatgpt.com/connector_platform_oauth_redirect';
+  if (!Array.isArray(redirect_uris) || !redirect_uris.includes(requiredRedirect)) {
+    return res.status(400).json({ error: 'Invalid redirect URIs' });
+  }
+
+  const client = {
+    client_id: "goodseeds-chatgpt",
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    redirect_uris,
+    token_endpoint_auth_method: "none",
+    response_types: ["code"],
+    grant_types: ["authorization_code", "refresh_token"]
+  };
+
+  res.status(201).json(client);
+});
+
+// ===================== 5. OAuth Authorization Endpoint (REAL Google Redirect) =====================
 app.get('/oauth/authorize', (req, res) => {
   const { client_id, redirect_uri, response_type, code_challenge } = req.query;
 
-  // Простая валидация
+  // Проверка базовых параметров
   if (!client_id || !redirect_uri || response_type !== 'code') {
     return res.status(400).send('Invalid authorization request');
   }
 
-  // Генерируем тестовый код авторизации
-  const code = 'goodseeds-auth-code-' + Math.random().toString(36).substring(2, 10);
-  console.log(`Issued authorization code: ${code}`);
+  // Формируем Google OAuth URL
+  const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  googleAuthUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
+  googleAuthUrl.searchParams.set('redirect_uri', redirect_uri);
+  googleAuthUrl.searchParams.set('response_type', 'code');
+  googleAuthUrl.searchParams.set('access_type', 'offline');
+  googleAuthUrl.searchParams.set('prompt', 'consent');
+  googleAuthUrl.searchParams.set('scope', [
+    'https://www.googleapis.com/auth/spreadsheets.readonly',
+    'https://www.googleapis.com/auth/drive.readonly'
+  ].join(' '));
 
-  // Редиректим обратно в ChatGPT
-  const redirectUrl = `${redirect_uri}?code=${code}`;
-  res.redirect(302, redirectUrl);
+  // Добавляем PKCE если есть
+  if (code_challenge) {
+    googleAuthUrl.searchParams.set('code_challenge', code_challenge);
+    googleAuthUrl.searchParams.set('code_challenge_method', 'S256');
+  }
+
+  console.log('Redirecting to Google OAuth:', googleAuthUrl.toString());
+  res.redirect(302, googleAuthUrl.toString());
 });
 
-// ===================== OAuth Token Exchange =====================
+// ===================== 6. Token Exchange Endpoint =====================
 app.post('/oauth/token', async (req, res) => {
   try {
     const { code, redirect_uri, code_verifier } = req.body || {};
@@ -24,15 +129,16 @@ app.post('/oauth/token', async (req, res) => {
       return res.status(400).json({ error: 'Missing authorization code' });
     }
 
-    // Запрос к Google OAuth для обмена кода на токен
+    // Обмениваем код на токен у Google
     const params = new URLSearchParams({
       code,
       client_id: process.env.GOOGLE_CLIENT_ID,
       client_secret: process.env.GOOGLE_CLIENT_SECRET,
       redirect_uri: redirect_uri || 'https://chatgpt.com/connector_platform_oauth_redirect',
       grant_type: 'authorization_code',
-      code_verifier: code_verifier || ''
     });
+
+    if (code_verifier) params.set('code_verifier', code_verifier);
 
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -46,7 +152,6 @@ app.post('/oauth/token', async (req, res) => {
       return res.status(response.status).json(data);
     }
 
-    // Возвращаем ChatGPT структуру токена
     res.json({
       access_token: data.access_token,
       refresh_token: data.refresh_token,
@@ -55,4 +160,38 @@ app.post('/oauth/token', async (req, res) => {
     });
   } catch (err) {
     console.error('Token exchange failed:', err);
-    res.status(500).json({ error: 'Internal
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ===================== 7. Sheets proxy (optional) =====================
+app.get('/sheets/:id', async (req, res) => {
+  const { id } = req.params;
+  const accessToken = process.env.GOOGLE_ACCESS_TOKEN;
+  if (!accessToken) return res.status(500).json({ error: 'GOOGLE_ACCESS_TOKEN not set' });
+
+  const options = {
+    hostname: 'sheets.googleapis.com',
+    path: `/v4/spreadsheets/${id}`,
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` }
+  };
+
+  const proxyReq = https.request(options, (proxyRes) => {
+    let data = '';
+    proxyRes.on('data', chunk => (data += chunk));
+    proxyRes.on('end', () => {
+      try {
+        res.json(JSON.parse(data));
+      } catch {
+        res.status(500).json({ error: 'Invalid sheet response' });
+      }
+    });
+  });
+
+  proxyReq.on('error', err => res.status(500).json({ error: err.message }));
+  proxyReq.end();
+});
+
+// ===================== Export app for Vercel =====================
+module.exports = app;
