@@ -30,9 +30,9 @@ app.get("/.well-known/mcp/manifest.json", (req, res) => {
     },
     oauth_server: "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server",
     description: "MCP connector for accessing Google Sheets through ChatGPT",
-    contact_email: "support@goodseeds.app",
-    terms_of_service_url: "https://goodseeds.app/terms",
-    privacy_policy_url: "https://goodseeds.app/privacy"
+    contact_email: "nik@goodseeds.ru",
+"terms_of_service_url": "https://goodseeds.ru/connector-terms",
+"privacy_policy_url": "https://goodseeds.ru/page84131506.html"
   });
 });
 
