@@ -26,7 +26,7 @@ app.get("/.well-known/mcp/manifest.json", (req, res) => {
         "https://www.googleapis.com/auth/drive"
       ]
     },
-    oauth_server: "https://goodseeds-p5r4hc0e0-niks-projects-86f27f2c.vercel.app/.well-known/oauth-authorization-server"
+    oauth_server: "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server"
   });
 });
 
