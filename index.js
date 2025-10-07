@@ -32,7 +32,7 @@ app.get("/.well-known/mcp/manifest.json", (req, res) => {
     description: "MCP connector for accessing Google Sheets through ChatGPT",
     contact_email: "nik@goodseeds.ru",
 "terms_of_service_url": "https://goodseeds.ru/connector-terms",
-"privacy_policy_url": "https://goodseeds.ru/page84131506.html"
+"privacy_policy_url": "https://goodseeds.ru/connector-privacy"
   });
 });
 
