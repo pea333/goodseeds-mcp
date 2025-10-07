@@ -1,5 +1,6 @@
-const express = require('express');
-const https = require('https');
+const express = require("express");
+const https = require("https");
+const fetch = require("node-fetch");
 
 const app = express();
 app.use(express.json());
@@ -7,7 +8,7 @@ app.use(express.json());
 // ===================== 1. MCP manifest =====================
 const manifest = {
   name: "goodseeds-google-sheets",
-  version: "1.0.0",
+  version: "2.0.0",
   authentication: [
     {
       type: "oauth",
@@ -24,12 +25,12 @@ const manifest = {
   contact: "nik@goodseeds.ru"
 };
 
-app.get('/.well-known/mcp/manifest.json', (req, res) => {
-  res.type('application/json').json(manifest);
+app.get("/.well-known/mcp/manifest.json", (req, res) => {
+  res.type("application/json").json(manifest);
 });
-app.head('/.well-known/mcp/manifest.json', (req, res) => res.status(200).send('OK'));
+app.head("/.well-known/mcp/manifest.json", (_, res) => res.sendStatus(200));
 
-// ===================== 2. OAuth Server Metadata =====================
+// ===================== 2. OAuth Metadata (RFC 8414) =====================
 const oauthMetadata = {
   issuer: "https://goodseeds-mcp.vercel.app",
   authorization_endpoint: "https://goodseeds-mcp.vercel.app/oauth/authorize",
@@ -46,36 +47,16 @@ const oauthMetadata = {
   ]
 };
 
-app.get('/.well-known/oauth-authorization-server', (req, res) => {
-  res.type('application/json').json(oauthMetadata);
+app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  res.type("application/json").json(oauthMetadata);
 });
-app.head('/.well-known/oauth-authorization-server', (req, res) => res.status(200).send('OK'));
+app.head("/.well-known/oauth-authorization-server", (_, res) => res.sendStatus(200));
 
-// ===================== 3. Protected Resource Metadata =====================
-const protectedResourceMetadata = {
-  resource: "https://goodseeds-mcp.vercel.app",
-  authorization_servers: [
-    "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server"
-  ],
-  bearer_methods_supported: ["header"],
-  scopes_supported: [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
-    "offline_access"
-  ]
-};
-
-app.get('/.well-known/oauth-protected-resource', (req, res) => {
-  res.type('application/json').json(protectedResourceMetadata);
-});
-app.head('/.well-known/oauth-protected-resource', (req, res) => res.status(200).send('OK'));
-
-// ===================== 4. Dynamic client registration =====================
-app.post('/oauth/register', (req, res) => {
+// ===================== 3. Client registration =====================
+app.post("/oauth/register", (req, res) => {
   const { redirect_uris } = req.body || {};
-  const requiredRedirect = 'https://chatgpt.com/connector_platform_oauth_redirect';
-  if (!Array.isArray(redirect_uris) || !redirect_uris.includes(requiredRedirect)) {
-    return res.status(400).json({ error: 'Invalid redirect URIs' });
+  if (!Array.isArray(redirect_uris)) {
+    return res.status(400).json({ error: "Invalid redirect URIs" });
   }
 
   const client = {
@@ -86,112 +67,95 @@ app.post('/oauth/register', (req, res) => {
     response_types: ["code"],
     grant_types: ["authorization_code", "refresh_token"]
   };
-
   res.status(201).json(client);
 });
 
-// ===================== 5. OAuth Authorization Endpoint (REAL Google Redirect) =====================
-app.get('/oauth/authorize', (req, res) => {
-  const { client_id, redirect_uri, response_type, code_challenge } = req.query;
+// ===================== 4. Authorization (redirect to Google) =====================
+app.get("/oauth/authorize", (req, res) => {
+  const googleAuthURL = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  googleAuthURL.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID);
+  googleAuthURL.searchParams.set("redirect_uri", "https://goodseeds-mcp.vercel.app/oauth/callback");
+  googleAuthURL.searchParams.set("response_type", "code");
+  googleAuthURL.searchParams.set("access_type", "offline");
+  googleAuthURL.searchParams.set("prompt", "consent");
+  googleAuthURL.searchParams.set("scope", [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
+  ].join(" "));
 
-  // Проверка базовых параметров
-  if (!client_id || !redirect_uri || response_type !== 'code') {
-    return res.status(400).send('Invalid authorization request');
-  }
-
-  // Формируем Google OAuth URL
-  const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-  googleAuthUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
-  googleAuthUrl.searchParams.set('redirect_uri', redirect_uri);
-  googleAuthUrl.searchParams.set('response_type', 'code');
-  googleAuthUrl.searchParams.set('access_type', 'offline');
-  googleAuthUrl.searchParams.set('prompt', 'consent');
-  googleAuthUrl.searchParams.set('scope', [
-    'https://www.googleapis.com/auth/spreadsheets.readonly',
-    'https://www.googleapis.com/auth/drive.readonly'
-  ].join(' '));
-
-  // Добавляем PKCE если есть
-  if (code_challenge) {
-    googleAuthUrl.searchParams.set('code_challenge', code_challenge);
-    googleAuthUrl.searchParams.set('code_challenge_method', 'S256');
-  }
-
-  console.log('Redirecting to Google OAuth:', googleAuthUrl.toString());
-  res.redirect(302, googleAuthUrl.toString());
+  res.redirect(302, googleAuthURL.toString());
 });
 
-// ===================== 6. Token Exchange Endpoint =====================
-app.post('/oauth/token', async (req, res) => {
-  try {
-    const { code, redirect_uri, code_verifier } = req.body || {};
-    if (!code) {
-      return res.status(400).json({ error: 'Missing authorization code' });
-    }
+// ===================== 5. Callback handler (exchange code for token) =====================
+app.get("/oauth/callback", async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send("Missing authorization code");
 
-    // Обмениваем код на токен у Google
+  try {
     const params = new URLSearchParams({
       code,
       client_id: process.env.GOOGLE_CLIENT_ID,
       client_secret: process.env.GOOGLE_CLIENT_SECRET,
-      redirect_uri: redirect_uri || 'https://chatgpt.com/connector_platform_oauth_redirect',
-      grant_type: 'authorization_code',
+      redirect_uri: "https://goodseeds-mcp.vercel.app/oauth/callback",
+      grant_type: "authorization_code"
     });
 
-    if (code_verifier) params.set('code_verifier', code_verifier);
-
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString()
     });
 
     const data = await response.json();
-    if (!response.ok) {
-      console.error('Google token exchange error:', data);
-      return res.status(response.status).json(data);
+
+    if (data.error) {
+      console.error("Token exchange error:", data);
+      return res.status(400).json(data);
     }
 
-    res.json({
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      token_type: data.token_type || 'Bearer',
-      expires_in: data.expires_in
-    });
+    console.log("✅ Token obtained:", data);
+    res.json({ message: "Authorization successful!", token: data });
   } catch (err) {
-    console.error('Token exchange failed:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error("Callback error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-// ===================== 7. Sheets proxy (optional) =====================
-app.get('/sheets/:id', async (req, res) => {
+// ===================== 6. Token endpoint for ChatGPT =====================
+app.post("/oauth/token", async (req, res) => {
+  const { code } = req.body || {};
+  if (!code) return res.status(400).json({ error: "Missing code" });
+  res.status(400).json({ error: "Direct token exchange not supported here. Use /oauth/callback instead." });
+});
+
+// ===================== 7. Sheets proxy =====================
+app.get("/sheets/:id", async (req, res) => {
   const { id } = req.params;
   const accessToken = process.env.GOOGLE_ACCESS_TOKEN;
-  if (!accessToken) return res.status(500).json({ error: 'GOOGLE_ACCESS_TOKEN not set' });
+  if (!accessToken) return res.status(500).json({ error: "GOOGLE_ACCESS_TOKEN not set" });
 
   const options = {
-    hostname: 'sheets.googleapis.com',
+    hostname: "sheets.googleapis.com",
     path: `/v4/spreadsheets/${id}`,
-    method: 'GET',
+    method: "GET",
     headers: { Authorization: `Bearer ${accessToken}` }
   };
 
-  const proxyReq = https.request(options, (proxyRes) => {
-    let data = '';
-    proxyRes.on('data', chunk => (data += chunk));
-    proxyRes.on('end', () => {
+  const proxyReq = https.request(options, proxyRes => {
+    let data = "";
+    proxyRes.on("data", chunk => (data += chunk));
+    proxyRes.on("end", () => {
       try {
         res.json(JSON.parse(data));
       } catch {
-        res.status(500).json({ error: 'Invalid sheet response' });
+        res.status(500).json({ error: "Invalid response from Google Sheets" });
       }
     });
   });
 
-  proxyReq.on('error', err => res.status(500).json({ error: err.message }));
+  proxyReq.on("error", err => res.status(500).json({ error: err.message }));
   proxyReq.end();
 });
 
-// ===================== Export app for Vercel =====================
+// ===================== Export =====================
 module.exports = app;
