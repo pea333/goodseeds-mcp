@@ -4,14 +4,16 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
+// === CORS (чтобы ChatGPT мог обращаться к серверу) ===
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
   next();
 });
 
 // === 1. MCP manifest ===
 app.get("/.well-known/mcp/manifest.json", (req, res) => {
+  console.log("GET /.well-known/mcp/manifest.json");
   res.json({
     name: "GoodSeeds Google Sheets Connector",
     version: "1.0.0",
@@ -36,6 +38,7 @@ app.get("/.well-known/mcp/manifest.json", (req, res) => {
 
 // === 2. OAuth discovery endpoint ===
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  console.log("GET /.well-known/oauth-authorization-server");
   res.json({
     issuer: "https://accounts.google.com",
     authorization_endpoint: "https://accounts.google.com/o/oauth2/auth",
@@ -47,22 +50,49 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
   });
 });
 
-// === 3. Example proxy for reading sheet ===
+// === 3. OpenID configuration endpoint ===
+app.get("/.well-known/openid-configuration", (req, res) => {
+  console.log("GET /.well-known/openid-configuration");
+  res.json({
+    issuer: "https://accounts.google.com",
+    authorization_endpoint: "https://accounts.google.com/o/oauth2/auth",
+    token_endpoint: "https://oauth2.googleapis.com/token",
+    scopes_supported: [
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive"
+    ],
+    response_types_supported: ["code", "token"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"]
+  });
+});
+
+// === 4. Example proxy for reading a sheet ===
 app.get("/sheets/:id", async (req, res) => {
   const { id } = req.params;
   const accessToken = req.headers.authorization?.split(" ")[1];
-  if (!accessToken) return res.status(401).json({ error: "Missing token" });
 
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${id}/values/Sheet1!A1:D10`,
-    {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }
-  );
+  if (!accessToken) {
+    console.warn("Missing access token in /sheets/:id");
+    return res.status(401).json({ error: "Missing token" });
+  }
 
-  const data = await response.json();
-  res.json(data);
+  try {
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${id}/values/Sheet1!A1:D10`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }
+    );
+
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("Error fetching Google Sheets data:", err);
+    res.status(500).json({ error: "Failed to fetch data from Google Sheets" });
+  }
 });
 
+// === 5. Start server ===
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`MCP server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ MCP server running on port ${PORT}`));
