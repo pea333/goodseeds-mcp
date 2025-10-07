@@ -91,7 +91,23 @@ app.post('/oauth/register', (req, res) => {
 });
 
 // ===================== 5. Stub endpoints for ChatGPT checks =====================
-app.get('/oauth/authorize', (req, res) => res.status(200).send('Authorization endpoint alive'));
+// ===================== Authorization endpoint (real redirect) =====================
+app.get('/oauth/authorize', (req, res) => {
+  const { client_id, redirect_uri, response_type, code_challenge } = req.query;
+
+  // Простая валидация
+  if (!client_id || !redirect_uri || response_type !== 'code') {
+    return res.status(400).send('Invalid authorization request');
+  }
+
+  // Генерируем тестовый код авторизации
+  const code = 'goodseeds-auth-code-' + Math.random().toString(36).substring(2, 10);
+  console.log(`Issued authorization code: ${code}`);
+
+  // Редиректим обратно в ChatGPT
+  const redirectUrl = `${redirect_uri}?code=${code}`;
+  res.redirect(302, redirectUrl);
+});
 app.post('/oauth/token', (req, res) => {
   res.json({
     access_token: "dummy-token",
