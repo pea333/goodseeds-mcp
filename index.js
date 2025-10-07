@@ -9,7 +9,7 @@ const DEFAULT_SCOPES = [
   "https://www.googleapis.com/auth/drive.readonly",
   "offline_access"
 ];
-
+ 
 const manifest = Object.freeze({
   name: "goodseeds-google-sheets",
   version: "1.0.0",
