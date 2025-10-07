@@ -20,13 +20,17 @@ app.get("/.well-known/mcp/manifest.json", (req, res) => {
       authorization_url: "https://accounts.google.com/o/oauth2/auth",
       token_url: "https://oauth2.googleapis.com/token",
       client_id: "930233734207-qp010p8gj8tc9emhbanjeca93rrne8f6.apps.googleusercontent.com",
-      client_secret: "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",
+      client_secret: "GOCSPX-IhmUaQVLmZvPHEhGnHLARjgWlN-",
       scopes: [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
       ]
     },
-    oauth_server: "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server"
+    oauth_server: "https://goodseeds-mcp.vercel.app/.well-known/oauth-authorization-server",
+    description: "MCP connector for accessing Google Sheets through ChatGPT",
+    contact_email: "support@goodseeds.app",
+    terms_of_service_url: "https://goodseeds.app/terms",
+    privacy_policy_url: "https://goodseeds.app/privacy"
   });
 });
 
