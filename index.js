@@ -255,7 +255,21 @@ function createApp() {
         }
       }
 
-      const { chatgptRedirectUri, mcpClientId, chatgptState } = decoded || {};
+      // если state не раскодировался, подставляем пустой объект,
+// но сохраняем исходный raw state от ChatGPT, если он был
+let decoded = {};
+let chatgptState = null;
+if (state) {
+  try {
+    decoded = JSON.parse(Buffer.from(String(state), "base64url").toString("utf8"));
+    chatgptState = decoded.chatgptState || null;
+  } catch {
+    console.warn("⚠️ Skipping invalid state (stateless mode), but preserving raw ChatGPT state");
+    // восстановим chatgptState напрямую из запроса Google → ChatGPT
+    chatgptState = state;
+  }
+}
+const { chatgptRedirectUri, mcpClientId } = decoded || {};
       if (!chatgptRedirectUri) {
         console.warn("⚠️ No chatgptRedirectUri in state, continuing without validation");
       }
