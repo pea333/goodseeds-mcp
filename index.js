@@ -22,7 +22,7 @@ const manifest = Object.freeze({
     }
   ],
   terms_of_service_url: "https://goodseeds.ru/connector-terms",
-  privacy_policy_url: "https://goodseeds.ru/page84131506.html",
+  privacy_policy_url: "https://goodseeds.ru/connector-privacy",
   contact: "nik@goodseeds.ru"
 });
 
