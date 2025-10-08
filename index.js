@@ -108,7 +108,8 @@ function ensureGoogleCredentials() {
   return {
     clientId,
     clientSecret,
-    redirectUri: process.env.REDIRECT_URI || DEFAULT_CALLBACK
+    redirectUri:
+      process.env.GOOGLE_REDIRECT_URI || process.env.REDIRECT_URI || DEFAULT_CALLBACK
   };
 }
 
@@ -223,6 +224,9 @@ function createApp() {
       googleParams.set("code_challenge", codeChallenge);
       googleParams.set("code_challenge_method", codeChallengeMethod);
     }
+
+    console.log("Using client_id:", credentials.clientId);
+    console.log("Redirect URI:", credentials.redirectUri);
 
     const redirectTarget = `${GOOGLE_AUTH_BASE}?${googleParams.toString()}`;
     return res.redirect(302, redirectTarget);
