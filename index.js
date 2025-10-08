@@ -283,7 +283,7 @@ function createApp() {
         return res.status(400).send("invalid_request");
       }
 
-      let decoded;
+      let decoded = {};
       let chatgptRedirectUri = DEFAULT_CONNECTOR_REDIRECT;
       let mcpClientId = null;
       let chatgptState = null;
@@ -292,13 +292,14 @@ function createApp() {
         try {
           decoded = JSON.parse(Buffer.from(String(state), "base64url").toString("utf8"));
         } catch (parseError) {
-          console.warn("Invalid OAuth state, continuing stateless mode", parseError);
+          console.warn("⚠️ Skipping invalid state (stateless fallback)", parseError);
+          decoded = {};
         }
       } else {
-        console.warn("Missing OAuth state, continuing stateless mode");
+        console.warn("⚠️ Skipping invalid state (stateless fallback) - missing state");
       }
 
-      if (decoded && typeof decoded === "object") {
+      if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
         if (typeof decoded.chatgptRedirectUri === "string" && decoded.chatgptRedirectUri.trim()) {
           chatgptRedirectUri = decoded.chatgptRedirectUri;
         }
