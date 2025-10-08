@@ -4,8 +4,7 @@ const { randomBytes } = require("crypto");
 const GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const GOOGLE_REDIRECT_URI =
-  (process.env.GOOGLE_REDIRECT_URI && process.env.GOOGLE_REDIRECT_URI.trim()) ||
-  "https://goodseeds-mcp.vercel.app/oauth/callback";
+  process.env.GOOGLE_REDIRECT_URI || "https://goodseeds-mcp.vercel.app/oauth/callback";
 const DEFAULT_CONNECTOR_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
 const CHATGPT_ACTION_REDIRECT_HOST = "chat.openai.com";
 const CHATGPT_ACTION_REDIRECT_PATH_PREFIX = "/aip/";
@@ -258,7 +257,7 @@ function createApp() {
 
     const url = new URL(GOOGLE_AUTH);
     url.searchParams.set("client_id", credentials.clientId);
-    url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    url.searchParams.set("redirect_uri", process.env.GOOGLE_REDIRECT_URI);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("scope", GOOGLE_SCOPES);
     url.searchParams.set("access_type", "offline");
