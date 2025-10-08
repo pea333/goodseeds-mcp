@@ -70,6 +70,48 @@ describe("OAuth state handling", () => {
     );
   });
 
+  it("should return ChatGPT state in the final redirect when provided", async () => {
+    const nodeFetch = originalFetch;
+    global.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (typeof url === "string" && url.startsWith("https://oauth2.googleapis.com/")) {
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: "test-access-token",
+            refresh_token: "test-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer"
+          }),
+          text: async () => "ok"
+        };
+      }
+
+      return nodeFetch(input, init);
+    };
+
+    const statePayload = {
+      chatgptRedirectUri: "https://chatgpt.com/connector_platform_oauth_redirect",
+      mcpClientId: "goodseeds-chatgpt",
+      chatgptState: "sample-chatgpt-state"
+    };
+    const encodedState = Buffer.from(JSON.stringify(statePayload)).toString("base64url");
+
+    const callbackUrl = new URL(`${baseUrl}/oauth/callback`);
+    callbackUrl.searchParams.set("code", "test-code");
+    callbackUrl.searchParams.set("state", encodedState);
+
+    const response = await fetch(callbackUrl, { redirect: "manual" });
+
+    assert.equal(response.status, 302);
+    const location = response.headers.get("location");
+    assert.ok(location.includes("chatgpt.com"));
+
+    const redirectUrl = new URL(location);
+    assert.ok(redirectUrl.searchParams.get("code"));
+    assert.equal(redirectUrl.searchParams.get("state"), "sample-chatgpt-state");
+  });
+
   it("should not crash when callback is called with broken state", async () => {
     const nodeFetch = originalFetch;
     global.fetch = async (input, init) => {
@@ -114,7 +156,9 @@ describe("OAuth state handling", () => {
       assert.ok(redirectUrl.searchParams.get("code"));
       assert.equal(redirectUrl.searchParams.get("state"), null);
       assert.ok(
-        warnings.some((message) => message.includes("⚠️ Skipping invalid state (stateless fallback)"))
+        warnings.some((message) =>
+          message.includes("⚠️ Missing or invalid state, continuing without ChatGPT state.")
+        )
       );
     } finally {
       console.warn = originalWarn;

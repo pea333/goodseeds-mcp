@@ -283,20 +283,23 @@ function createApp() {
         return res.status(400).send("invalid_request");
       }
 
-      let decoded = {};
+      const normalizedState = state == null ? null : String(state);
+      let decoded = null;
       let chatgptRedirectUri = DEFAULT_CONNECTOR_REDIRECT;
       let mcpClientId = null;
       let chatgptState = null;
 
-      if (state) {
+      if (normalizedState) {
         try {
-          decoded = JSON.parse(Buffer.from(String(state), "base64url").toString("utf8"));
+          decoded = JSON.parse(Buffer.from(normalizedState, "base64url").toString("utf8"));
         } catch (parseError) {
-          console.warn("⚠️ Skipping invalid state (stateless fallback)", parseError);
-          decoded = {};
+          console.warn(
+            "⚠️ Missing or invalid state, continuing without ChatGPT state.",
+            parseError
+          );
         }
       } else {
-        console.warn("⚠️ Skipping invalid state (stateless fallback) - missing state");
+        console.warn("⚠️ Missing or invalid state, continuing without ChatGPT state.");
       }
 
       if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
@@ -310,13 +313,7 @@ function createApp() {
 
         if (Object.prototype.hasOwnProperty.call(decoded, "chatgptState")) {
           const value = decoded.chatgptState;
-          if (typeof value === "string") {
-            chatgptState = value;
-          } else if (value != null) {
-            chatgptState = String(value);
-          } else {
-            chatgptState = null;
-          }
+          chatgptState = value == null ? null : String(value);
         }
       }
 
