@@ -7,6 +7,12 @@ const GOOGLE_REDIRECT_URI =
   (process.env.GOOGLE_REDIRECT_URI && process.env.GOOGLE_REDIRECT_URI.trim()) ||
   "https://goodseeds-mcp.vercel.app/oauth/callback";
 const DEFAULT_CONNECTOR_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
+const CHATGPT_ACTION_REDIRECT_HOST = "chat.openai.com";
+const CHATGPT_ACTION_REDIRECT_PATH_PREFIX = "/aip/";
+const CHATGPT_ACTION_REDIRECT_PATH_SUFFIX = "/oauth/callback";
+const ALLOWED_STATIC_REDIRECT_URIS = Object.freeze([
+  DEFAULT_CONNECTOR_REDIRECT
+]);
 const GOOGLE_SCOPE_LIST = [
   "https://www.googleapis.com/auth/spreadsheets.readonly",
   "https://www.googleapis.com/auth/drive.readonly"
@@ -53,6 +59,46 @@ const protectedResourceMetadata = Object.freeze({
 });
 
 const authorizationCodeStore = new Map();
+
+function isAllowedChatGptRedirect(uri) {
+  if (ALLOWED_STATIC_REDIRECT_URIS.includes(uri)) {
+    return true;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(uri);
+  } catch (_error) {
+    return false;
+  }
+
+  if (parsed.protocol !== "https:") {
+    return false;
+  }
+
+  if (parsed.hostname !== CHATGPT_ACTION_REDIRECT_HOST) {
+    return false;
+  }
+
+  const pathname = parsed.pathname || "";
+  if (!pathname.startsWith(CHATGPT_ACTION_REDIRECT_PATH_PREFIX)) {
+    return false;
+  }
+
+  if (!pathname.endsWith(CHATGPT_ACTION_REDIRECT_PATH_SUFFIX)) {
+    return false;
+  }
+
+  const prefixLength = CHATGPT_ACTION_REDIRECT_PATH_PREFIX.length;
+  const suffixLength = CHATGPT_ACTION_REDIRECT_PATH_SUFFIX.length;
+  const gptIdSegment = pathname.slice(prefixLength, pathname.length - suffixLength);
+
+  if (!gptIdSegment || gptIdSegment.includes("/")) {
+    return false;
+  }
+
+  return true;
+}
 
 function pruneExpiredAuthorizationCodes(now = Date.now()) {
   for (const [code, entry] of authorizationCodeStore.entries()) {
@@ -185,7 +231,8 @@ function createApp() {
       return res.status(400).send("missing_redirect_uri");
     }
 
-    if (chatgptRedirectUri !== DEFAULT_CONNECTOR_REDIRECT) {
+    if (!isAllowedChatGptRedirect(chatgptRedirectUri)) {
+      console.warn("Blocked redirect URI:", chatgptRedirectUri);
       return res.status(400).send("unsupported_redirect_uri");
     }
 
