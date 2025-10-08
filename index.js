@@ -4,12 +4,15 @@ const { randomBytes } = require("crypto");
 const GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const GOOGLE_REDIRECT_URI =
-  process.env.GOOGLE_REDIRECT_URI || "https://goodseeds-mcp.vercel.app/oauth/callback";
+  (process.env.GOOGLE_REDIRECT_URI && process.env.GOOGLE_REDIRECT_URI.trim()) ||
+  "https://goodseeds-mcp.vercel.app/oauth/callback";
 const DEFAULT_CONNECTOR_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
 const CHATGPT_ACTION_REDIRECT_HOST = "chat.openai.com";
 const CHATGPT_ACTION_REDIRECT_PATH_PREFIX = "/aip/";
 const CHATGPT_ACTION_REDIRECT_PATH_SUFFIX = "/oauth/callback";
-const ALLOWED_STATIC_REDIRECT_URIS = Object.freeze([DEFAULT_CONNECTOR_REDIRECT]);
+const ALLOWED_STATIC_REDIRECT_URIS = Object.freeze([
+  DEFAULT_CONNECTOR_REDIRECT
+]);
 const GOOGLE_SCOPE_LIST = [
   "https://www.googleapis.com/auth/spreadsheets.readonly",
   "https://www.googleapis.com/auth/drive.readonly"
@@ -17,7 +20,7 @@ const GOOGLE_SCOPE_LIST = [
 const GOOGLE_SCOPES = GOOGLE_SCOPE_LIST.join(" ");
 
 const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
-
+ 
 const manifest = Object.freeze({
   name: "goodseeds-google-sheets",
   version: "1.0.0",
@@ -69,18 +72,31 @@ function isAllowedChatGptRedirect(uri) {
     return false;
   }
 
-  if (parsed.protocol !== "https:") return false;
-  if (parsed.hostname !== CHATGPT_ACTION_REDIRECT_HOST) return false;
+  if (parsed.protocol !== "https:") {
+    return false;
+  }
+
+  if (parsed.hostname !== CHATGPT_ACTION_REDIRECT_HOST) {
+    return false;
+  }
 
   const pathname = parsed.pathname || "";
-  if (!pathname.startsWith(CHATGPT_ACTION_REDIRECT_PATH_PREFIX)) return false;
-  if (!pathname.endsWith(CHATGPT_ACTION_REDIRECT_PATH_SUFFIX)) return false;
+  if (!pathname.startsWith(CHATGPT_ACTION_REDIRECT_PATH_PREFIX)) {
+    return false;
+  }
+
+  if (!pathname.endsWith(CHATGPT_ACTION_REDIRECT_PATH_SUFFIX)) {
+    return false;
+  }
 
   const prefixLength = CHATGPT_ACTION_REDIRECT_PATH_PREFIX.length;
   const suffixLength = CHATGPT_ACTION_REDIRECT_PATH_SUFFIX.length;
   const gptIdSegment = pathname.slice(prefixLength, pathname.length - suffixLength);
 
-  if (!gptIdSegment || gptIdSegment.includes("/")) return false;
+  if (!gptIdSegment || gptIdSegment.includes("/")) {
+    return false;
+  }
+
   return true;
 }
 
@@ -106,26 +122,31 @@ async function issueAuthorizationCode({ mcpClientId, googleTokens }) {
 }
 
 function consumeAuthorizationCode(code, { mcpClientId } = {}) {
-  if (!code) return null;
+  if (!code) {
+    return null;
+  }
 
   pruneExpiredAuthorizationCodes();
   const entry = authorizationCodeStore.get(code);
-  if (!entry) return null;
+  if (!entry) {
+    return null;
+  }
 
   authorizationCodeStore.delete(code);
-  if (entry.expiresAt <= Date.now()) return null;
-  if (entry.mcpClientId && mcpClientId && entry.mcpClientId !== mcpClientId) return null;
+  if (entry.expiresAt <= Date.now()) {
+    return null;
+  }
+
+  if (entry.mcpClientId && mcpClientId && entry.mcpClientId !== mcpClientId) {
+    return null;
+  }
 
   return entry.googleTokens;
 }
 
 function ensureGoogleCredentials() {
   ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"].forEach((key) => {
-    if (
-      !process.env[key] ||
-      !process.env[key].trim() ||
-      /^['"].*['"]$/.test(process.env[key])
-    ) {
+    if (!process.env[key] || !process.env[key].trim() || /^['"].*['"]$/.test(process.env[key])) {
       throw new Error(`Invalid or missing environment variable: ${key}`);
     }
   });
@@ -152,12 +173,24 @@ function createApp() {
     res.type("application/json").status(200).send(manifest);
   });
 
+  app.head("/.well-known/mcp/manifest.json", (req, res) => {
+    res.status(200).end();
+  });
+
   app.get("/.well-known/oauth-authorization-server", (req, res) => {
     res.type("application/json").status(200).send(oauthMetadata);
   });
 
+  app.head("/.well-known/oauth-authorization-server", (req, res) => {
+    res.status(200).end();
+  });
+
   app.get("/.well-known/oauth-protected-resource", (req, res) => {
     res.type("application/json").status(200).send(protectedResourceMetadata);
+  });
+
+  app.head("/.well-known/oauth-protected-resource", (req, res) => {
+    res.status(200).end();
   });
 
   app.post("/oauth/register", (req, res) => {
@@ -215,17 +248,20 @@ function createApp() {
       return res.status(500).send("server_misconfigured");
     }
 
+    const normalizedChatgptState =
+      typeof chatgptState === "string" ? chatgptState : chatgptState == null ? null : String(chatgptState);
+
     const packed = Buffer.from(
       JSON.stringify({
         chatgptRedirectUri,
         mcpClientId,
-        chatgptState: chatgptState || null
+        chatgptState: normalizedChatgptState
       })
     ).toString("base64url");
 
     const url = new URL(GOOGLE_AUTH);
     url.searchParams.set("client_id", credentials.clientId);
-    url.searchParams.set("redirect_uri", process.env.GOOGLE_REDIRECT_URI);
+    url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("scope", GOOGLE_SCOPES);
     url.searchParams.set("access_type", "offline");
@@ -240,38 +276,47 @@ function createApp() {
     return res.redirect(302, url.toString());
   });
 
-  // 🔧 main fix: skip state validation for stateless deployments like Vercel
   app.get("/oauth/callback", async (req, res) => {
     try {
       const { code, state } = req.query;
-      if (!code) return res.status(400).send("invalid_request");
+      if (!code) {
+        return res.status(400).send("invalid_request");
+      }
 
       let decoded;
+      let chatgptRedirectUri = DEFAULT_CONNECTOR_REDIRECT;
+      let mcpClientId = null;
+      let chatgptState = null;
+
       if (state) {
         try {
           decoded = JSON.parse(Buffer.from(String(state), "base64url").toString("utf8"));
-        } catch (e) {
-          console.warn("Skipping invalid state (stateless mode)", e);
+        } catch (parseError) {
+          console.warn("Invalid OAuth state, continuing stateless mode", parseError);
         }
+      } else {
+        console.warn("Missing OAuth state, continuing stateless mode");
       }
 
-      // если state не раскодировался, подставляем пустой объект,
-// но сохраняем исходный raw state от ChatGPT, если он был
-let decoded = {};
-let chatgptState = null;
-if (state) {
-  try {
-    decoded = JSON.parse(Buffer.from(String(state), "base64url").toString("utf8"));
-    chatgptState = decoded.chatgptState || null;
-  } catch {
-    console.warn("⚠️ Skipping invalid state (stateless mode), but preserving raw ChatGPT state");
-    // восстановим chatgptState напрямую из запроса Google → ChatGPT
-    chatgptState = state;
-  }
-}
-const { chatgptRedirectUri, mcpClientId } = decoded || {};
-      if (!chatgptRedirectUri) {
-        console.warn("⚠️ No chatgptRedirectUri in state, continuing without validation");
+      if (decoded && typeof decoded === "object") {
+        if (typeof decoded.chatgptRedirectUri === "string" && decoded.chatgptRedirectUri.trim()) {
+          chatgptRedirectUri = decoded.chatgptRedirectUri;
+        }
+
+        if (typeof decoded.mcpClientId === "string" && decoded.mcpClientId.trim()) {
+          mcpClientId = decoded.mcpClientId;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(decoded, "chatgptState")) {
+          const value = decoded.chatgptState;
+          if (typeof value === "string") {
+            chatgptState = value;
+          } else if (value != null) {
+            chatgptState = String(value);
+          } else {
+            chatgptState = null;
+          }
+        }
       }
 
       let credentials;
@@ -302,14 +347,23 @@ const { chatgptRedirectUri, mcpClientId } = decoded || {};
       }
 
       const googleTokens = await tokenRes.json();
-      if (!googleTokens.token_type) googleTokens.token_type = "Bearer";
-
+      if (!googleTokens.token_type) {
+        googleTokens.token_type = "Bearer";
+      }
       const asCode = await issueAuthorizationCode({ mcpClientId, googleTokens });
 
-      const redirectTarget = chatgptRedirectUri || DEFAULT_CONNECTOR_REDIRECT;
-      const out = new URL(redirectTarget);
+      let out;
+      try {
+        out = new URL(chatgptRedirectUri);
+      } catch (redirectError) {
+        console.error("Invalid ChatGPT redirect URI", redirectError);
+        return res.status(400).send("invalid_redirect_uri");
+      }
+
       out.searchParams.set("code", asCode);
-      if (chatgptState) out.searchParams.set("state", chatgptState);
+      if (chatgptState !== null && chatgptState !== undefined) {
+        out.searchParams.set("state", chatgptState);
+      }
 
       return res.redirect(302, out.toString());
     } catch (e) {
@@ -327,9 +381,7 @@ const { chatgptRedirectUri, mcpClientId } = decoded || {};
     } = { ...req.body, ...req.query };
 
     if (!grantType) {
-      return res
-        .status(400)
-        .json({ error: "invalid_request", error_description: "Missing grant_type" });
+      return res.status(400).json({ error: "invalid_request", error_description: "Missing grant_type" });
     }
 
     if (mcpClientId && mcpClientId !== "goodseeds-chatgpt") {
@@ -338,9 +390,7 @@ const { chatgptRedirectUri, mcpClientId } = decoded || {};
 
     if (grantType === "authorization_code") {
       if (!code) {
-        return res
-          .status(400)
-          .json({ error: "invalid_request", error_description: "Missing code" });
+        return res.status(400).json({ error: "invalid_request", error_description: "Missing code" });
       }
 
       const tokens = consumeAuthorizationCode(code, { mcpClientId: "goodseeds-chatgpt" });
@@ -387,7 +437,10 @@ const { chatgptRedirectUri, mcpClientId } = decoded || {};
           return res.status(response.status).json(payload);
         }
 
-        if (!payload.token_type) payload.token_type = "Bearer";
+        if (!payload.token_type) {
+          payload.token_type = "Bearer";
+        }
+
         return res.status(200).json(payload);
       } catch (error) {
         console.error("Token refresh failed", error);
@@ -398,16 +451,23 @@ const { chatgptRedirectUri, mcpClientId } = decoded || {};
     return res.status(400).json({ error: "unsupported_grant_type" });
   });
 
-  app.use((req, res) => res.status(404).json({ error: "not_found" }));
+  app.use((req, res) => {
+    res.status(404).json({ error: "not_found" });
+  });
 
   app.use((error, req, res, _next) => {
     console.error("Unhandled error", error);
-    if (!res.headersSent) res.status(500).json({ error: "internal_server_error" });
+    if (res.headersSent) {
+      return;
+    }
+
+    res.status(500).json({ error: "internal_server_error" });
   });
 
   return app;
 }
 
 const app = createApp();
+
 module.exports = app;
 module.exports.handler = (req, res) => app(req, res);
