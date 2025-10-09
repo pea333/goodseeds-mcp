@@ -1,5 +1,11 @@
 const express = require("express");
-const { randomBytes, randomUUID, createHash } = require("crypto");
+const {
+  randomBytes,
+  randomUUID,
+  createHash,
+  createHmac,
+  timingSafeEqual
+} = require("crypto");
 
 const GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -8,6 +14,7 @@ const GOOGLE_REDIRECT_URI =
   "https://goodseeds-mcp.vercel.app/oauth/callback";
 const DEFAULT_CONNECTOR_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
 const CHATGPT_ACTION_REDIRECT_HOST = "chat.openai.com";
+const CHATGPT_WEB_HOST = "chatgpt.com";
 const CHATGPT_ACTION_REDIRECT_PATH_PREFIX = "/aip/";
 const CHATGPT_ACTION_REDIRECT_PATH_SUFFIX = "/oauth/callback";
 const ALLOWED_STATIC_REDIRECT_URIS = Object.freeze([
@@ -19,11 +26,10 @@ const GOOGLE_SCOPE_LIST = [
 ];
 const GOOGLE_SCOPES = GOOGLE_SCOPE_LIST.join(" ");
 
-const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
-const TRANSACTION_TTL_MS = 10 * 60 * 1000;
+const MCP_CODE_TTL_MS = 5 * 60 * 1000;
 const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const DEV_LOG_ENABLED = process.env.NODE_ENV !== "production";
+const STATE_TTL_SECONDS = 5 * 60;
  
 const manifest = Object.freeze({
   name: "goodseeds-google-sheets",
@@ -62,20 +68,22 @@ const protectedResourceMetadata = Object.freeze({
   scopes_supported: GOOGLE_SCOPE_LIST
 });
 
-const transactionStore = new Map();
-const authorizationCodeStore = new Map();
+// NOTE: In-memory storage is used only as a temporary solution. For production,
+// this MUST be replaced with a persistent and shared store (e.g. KV/Redis).
+const mcpCodeStore = new Map();
 const accessTokenStore = new Map();
 const refreshTokenStore = new Map();
 
-function devLog(label, value) {
-  if (!DEV_LOG_ENABLED) {
-    return;
+function ensureStateSecret() {
+  const secret = process.env.STATE_SECRET;
+  if (!secret || !secret.trim() || /^['"].*['"]$/.test(secret)) {
+    throw new Error("Invalid or missing environment variable: STATE_SECRET");
   }
 
-  console.log(label, value);
+  return secret.trim();
 }
 
-function generateTxnId() {
+function generateJti() {
   if (typeof randomUUID === "function") {
     return randomUUID();
   }
@@ -97,6 +105,10 @@ function isAllowedChatGptRedirect(uri) {
 
   if (parsed.protocol !== "https:") {
     return false;
+  }
+
+  if (parsed.hostname === CHATGPT_WEB_HOST) {
+    return true;
   }
 
   if (parsed.hostname !== CHATGPT_ACTION_REDIRECT_HOST) {
@@ -123,20 +135,53 @@ function isAllowedChatGptRedirect(uri) {
   return true;
 }
 
-function pruneExpiredAuthorizationCodes(now = Date.now()) {
-  for (const [code, entry] of authorizationCodeStore.entries()) {
-    if (!entry || entry.expiresAt <= now) {
-      authorizationCodeStore.delete(code);
-    }
-  }
+function encodeStatePayload(payload) {
+  const secret = ensureStateSecret();
+  const payloadJson = JSON.stringify(payload);
+  const signature = createHmac("sha256", secret).update(payloadJson).digest("base64url");
+  const envelope = {
+    payload,
+    sig: signature
+  };
+  return Buffer.from(JSON.stringify(envelope)).toString("base64url");
 }
 
-function pruneExpiredTransactions(now = Date.now()) {
-  for (const [id, entry] of transactionStore.entries()) {
-    if (!entry || entry.expiresAt <= now) {
-      transactionStore.delete(id);
-    }
+function decodeStatePayload(encoded) {
+  const secret = ensureStateSecret();
+  let decoded;
+  try {
+    decoded = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch (error) {
+    throw new Error("invalid_state_format");
   }
+
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new Error("invalid_state_payload");
+  }
+
+  const { payload, sig } = decoded;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || typeof sig !== "string") {
+    throw new Error("invalid_state_payload");
+  }
+
+  const payloadJson = JSON.stringify(payload);
+  const expectedSignature = createHmac("sha256", secret).update(payloadJson).digest("base64url");
+  const expectedBuffer = Buffer.from(expectedSignature);
+  const actualBuffer = Buffer.from(sig);
+
+  if (
+    expectedBuffer.length !== actualBuffer.length ||
+    !timingSafeEqual(expectedBuffer, actualBuffer)
+  ) {
+    throw new Error("invalid_state_signature");
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== "number" || payload.exp <= nowSeconds) {
+    throw new Error("state_expired");
+  }
+
+  return payload;
 }
 
 function pruneExpiredAccessTokens(now = Date.now()) {
@@ -153,38 +198,55 @@ function pruneExpiredAccessTokens(now = Date.now()) {
   }
 }
 
-function createTransaction({ txnId, chatgptState, chatgptRedirectUri, codeChallenge, codeChallengeMethod, mcpClientId }) {
-  pruneExpiredTransactions();
-  const createdAt = Date.now();
-  const expiresAt = createdAt + TRANSACTION_TTL_MS;
-  transactionStore.set(txnId, {
-    chatgptState,
-    chatgptRedirectUri,
-    codeChallenge,
-    codeChallengeMethod,
-    mcpClientId,
-    createdAt,
-    expiresAt
+function pruneExpiredMcpCodes(now = Date.now()) {
+  for (const [code, entry] of mcpCodeStore.entries()) {
+    if (!entry || entry.expiresAt <= now) {
+      mcpCodeStore.delete(code);
+    }
+  }
+}
+
+function storeMcpCode(code, entry) {
+  pruneExpiredMcpCodes();
+  const issuedAt = Date.now();
+  mcpCodeStore.set(code, {
+    ...entry,
+    issuedAt,
+    expiresAt: issuedAt + MCP_CODE_TTL_MS
   });
 }
 
-function consumeTransaction(txnId) {
-  if (!txnId) {
+function consumeMcpCode(code) {
+  if (!code) {
     return null;
   }
 
-  pruneExpiredTransactions();
-  const entry = transactionStore.get(txnId);
+  pruneExpiredMcpCodes();
+  const entry = mcpCodeStore.get(code);
   if (!entry) {
     return null;
   }
 
-  transactionStore.delete(txnId);
+  mcpCodeStore.delete(code);
   if (entry.expiresAt <= Date.now()) {
     return null;
   }
 
   return entry;
+}
+
+function verifyPkceS256({ codeVerifier, codeChallenge, codeChallengeMethod }) {
+  if (!codeVerifier || !codeChallenge) {
+    return false;
+  }
+
+  const method = (codeChallengeMethod || "S256").trim();
+  if (method !== "S256") {
+    return false;
+  }
+
+  const digest = createHash("sha256").update(codeVerifier).digest("base64url");
+  return digest === codeChallenge;
 }
 
 function issueAccessToken({ googleTokens, mcpClientId, refreshToken, googleRefreshToken }) {
@@ -223,67 +285,6 @@ function issueRefreshToken({ googleRefreshToken, mcpClientId }) {
   });
 
   return refreshToken;
-}
-
-async function issueAuthorizationCode({
-  mcpClientId,
-  googleTokens,
-  codeChallenge,
-  codeChallengeMethod
-}) {
-  pruneExpiredAuthorizationCodes();
-  const code = randomBytes(32).toString("base64url");
-  const expiresAt = Date.now() + AUTH_CODE_TTL_MS;
-  authorizationCodeStore.set(code, {
-    mcpClientId: mcpClientId || null,
-    googleTokens,
-    codeChallenge: codeChallenge || null,
-    codeChallengeMethod: codeChallengeMethod || null,
-    issuedAt: Date.now(),
-    expiresAt
-  });
-  return code;
-}
-
-function consumeAuthorizationCode(code, { mcpClientId } = {}) {
-  if (!code) {
-    return null;
-  }
-
-  pruneExpiredAuthorizationCodes();
-  const entry = authorizationCodeStore.get(code);
-  if (!entry) {
-    return null;
-  }
-
-  authorizationCodeStore.delete(code);
-  if (entry.expiresAt <= Date.now()) {
-    return null;
-  }
-
-  if (entry.mcpClientId && mcpClientId && entry.mcpClientId !== mcpClientId) {
-    return null;
-  }
-
-  return entry;
-}
-
-function verifyPkce({ codeVerifier, codeChallenge, codeChallengeMethod }) {
-  if (!codeChallenge || !codeVerifier) {
-    return false;
-  }
-
-  const method = codeChallengeMethod || "S256";
-  if (method === "plain") {
-    return codeVerifier === codeChallenge;
-  }
-
-  if (method === "S256") {
-    const digest = createHash("sha256").update(codeVerifier).digest("base64url");
-    return digest === codeChallenge;
-  }
-
-  return false;
 }
 
 function ensureGoogleCredentials() {
@@ -387,7 +388,6 @@ function createApp() {
     }
 
     const normalizedChatgptState = String(chatgptState);
-    devLog("Schatgpt_in", normalizedChatgptState);
 
     if (!codeChallenge || typeof codeChallenge !== "string") {
       return res.status(400).send("missing_code_challenge");
@@ -406,27 +406,39 @@ function createApp() {
     let credentials;
     try {
       credentials = ensureGoogleCredentials();
+      ensureStateSecret();
     } catch (error) {
       console.error(error.message);
       return res.status(500).send("server_misconfigured");
     }
 
-    const txnId = generateTxnId();
-    createTransaction({
-      txnId,
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const statePayload = {
       chatgptState: normalizedChatgptState,
       chatgptRedirectUri,
       codeChallenge: normalizedCodeChallenge,
       codeChallengeMethod: normalizedCodeChallengeMethod,
-      mcpClientId
-    });
+      iat: nowSeconds,
+      exp: nowSeconds + STATE_TTL_SECONDS,
+      jti: generateJti()
+    };
 
-    const googleState = Buffer.from(JSON.stringify({ txnId })).toString("base64url");
-    devLog("Sgoogle_out", googleState);
+    let googleState;
+    try {
+      googleState = encodeStatePayload(statePayload);
+    } catch (error) {
+      console.error("State encoding failed", error);
+      return res.status(500).send("server_error");
+    }
+
+    console.log(
+      `[authorize] Schatgpt_in=${normalizedChatgptState} redirect_uri_in=${chatgptRedirectUri} ` +
+        `Sgoogle_out_len=${googleState.length} google_client_id=${credentials.clientId}`
+    );
 
     const url = new URL(GOOGLE_AUTH);
     url.searchParams.set("client_id", credentials.clientId);
-    url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    url.searchParams.set("redirect_uri", credentials.redirectUri);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("scope", GOOGLE_SCOPES);
     url.searchParams.set("access_type", "offline");
@@ -450,37 +462,44 @@ function createApp() {
         return res.status(400).send("missing_state");
       }
 
-      const normalizedGoogleState = String(googleState);
-      devLog("Sgoogle_in", normalizedGoogleState);
-
       let payload;
       try {
-        payload = JSON.parse(Buffer.from(normalizedGoogleState, "base64url").toString("utf8"));
+        payload = decodeStatePayload(String(googleState));
       } catch (error) {
-        console.warn("Invalid Google state payload", error);
-        return res.status(400).send("invalid_state");
-      }
+        if (error.message === "Invalid or missing environment variable: STATE_SECRET") {
+          console.error(error.message);
+          return res.status(500).send("server_misconfigured");
+        }
 
-      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-        return res.status(400).send("invalid_state");
-      }
-
-      const txnId = payload.txnId;
-      const txn = consumeTransaction(txnId);
-      if (!txn) {
+        if (error.message === "invalid_state_format") {
+          console.warn("Invalid Google state payload", error);
+        } else {
+          console.warn("State validation failed", error);
+        }
         return res.status(400).send("invalid_state");
       }
 
       const {
-        chatgptRedirectUri,
         chatgptState,
+        chatgptRedirectUri,
         codeChallenge,
-        codeChallengeMethod,
-        mcpClientId
-      } = txn;
+        codeChallengeMethod
+      } = payload;
+
+      if (!chatgptState || typeof chatgptState !== "string") {
+        return res.status(400).send("invalid_state");
+      }
 
       if (!chatgptRedirectUri || !isAllowedChatGptRedirect(chatgptRedirectUri)) {
         return res.status(400).send("invalid_redirect_uri");
+      }
+
+      if (!codeChallenge || typeof codeChallenge !== "string") {
+        return res.status(400).send("invalid_state");
+      }
+
+      if ((codeChallengeMethod || "").trim() !== "S256") {
+        return res.status(400).send("invalid_state");
       }
 
       let credentials;
@@ -495,7 +514,7 @@ function createApp() {
         code,
         client_id: credentials.clientId,
         client_secret: credentials.clientSecret,
-        redirect_uri: GOOGLE_REDIRECT_URI,
+        redirect_uri: credentials.redirectUri,
         grant_type: "authorization_code"
       });
 
@@ -514,11 +533,20 @@ function createApp() {
       if (!googleTokens.token_type) {
         googleTokens.token_type = "Bearer";
       }
-      const asCode = await issueAuthorizationCode({
-        mcpClientId,
-        googleTokens,
+
+      const sanitizedGoogleTokens = { ...googleTokens };
+      const googleRefreshToken = sanitizedGoogleTokens.refresh_token || null;
+      if (googleRefreshToken) {
+        delete sanitizedGoogleTokens.refresh_token;
+      }
+
+      const mcpCode = randomBytes(32).toString("base64url");
+      storeMcpCode(mcpCode, {
+        googleTokens: sanitizedGoogleTokens,
+        googleRefreshToken,
         codeChallenge,
-        codeChallengeMethod
+        codeChallengeMethod,
+        mcpClientId: "goodseeds-chatgpt"
       });
 
       let out;
@@ -529,10 +557,12 @@ function createApp() {
         return res.status(400).send("invalid_redirect_uri");
       }
 
-      out.searchParams.set("code", asCode);
+      out.searchParams.set("code", mcpCode);
       out.searchParams.set("state", chatgptState);
 
-      devLog("Schatgpt_out", chatgptState);
+      console.log(
+        `[callback] Sgoogle_in=OK Schatgpt_in=${chatgptState} redirect_uri_in=${chatgptRedirectUri} Schatgpt_out=${chatgptState}`
+      );
 
       return res.redirect(302, out.toString());
     } catch (e) {
@@ -569,28 +599,28 @@ function createApp() {
           .json({ error: "invalid_request", error_description: "Missing code_verifier" });
       }
 
-      const entry = consumeAuthorizationCode(code, { mcpClientId: "goodseeds-chatgpt" });
-      if (!entry) {
+      const entry = consumeMcpCode(code);
+      if (!entry || entry.mcpClientId !== "goodseeds-chatgpt") {
+        console.log("[token] pkce_check=FAIL");
         return res.status(400).json({ error: "invalid_grant" });
       }
 
-      const pkceValid = verifyPkce({
+      const pkceValid = verifyPkceS256({
         codeVerifier: String(codeVerifier),
         codeChallenge: entry.codeChallenge,
         codeChallengeMethod: entry.codeChallengeMethod
       });
 
+      console.log(`[token] pkce_check=${pkceValid ? "PASS" : "FAIL"}`);
+
       if (!pkceValid) {
         return res
           .status(400)
-          .json({ error: "invalid_grant", error_description: "PKCE verification failed" });
+          .json({ error: "invalid_grant", error_description: "pkce_failed" });
       }
 
-      const sanitizedGoogleTokens = { ...entry.googleTokens };
-      const googleRefreshToken = sanitizedGoogleTokens.refresh_token || null;
-      if (googleRefreshToken) {
-        delete sanitizedGoogleTokens.refresh_token;
-      }
+      const sanitizedGoogleTokens = { ...(entry.googleTokens || {}) };
+      const googleRefreshToken = entry.googleRefreshToken || null;
 
       const issuedRefreshToken = issueRefreshToken({
         googleRefreshToken,
